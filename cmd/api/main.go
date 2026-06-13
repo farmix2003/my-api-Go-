@@ -2,17 +2,26 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"my-api/internal/expense"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type postgresRepositoryAdapter struct {
+	*expense.PostgresRepository
+}
+
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	connString := fmt.Sprintf("postgres://postgres:%s@%s:%s/%s?sslmode=disable",
 		os.Getenv("DB_PASSWORD"),
@@ -20,8 +29,6 @@ func main() {
 		os.Getenv("DB_PORT"),
 		os.Getenv("DB_NAME"),
 	)
-
-	ctx := context.Background()
 
 	log.Println("Connecting to PostgreSQL...")
 
@@ -48,11 +55,40 @@ func main() {
 	handler := expense.NewHandler(service)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/expenses", handler.CreateExpenseHandler)
-	mux.HandleFunc("/allexpenses", handler.GetAllExpensesHandler)
+	mux.HandleFunc("POST /expenses", handler.CreateExpenseHandler)
+	mux.HandleFunc("GET /expenses", handler.GetAllExpensesHandler)
+	mux.HandleFunc("PUT /expenses/{id}", handler.UpdateExpense)
 
-	log.Println("Server starting on port :8080...")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatalf("Server crashed: %v", err)
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Println("Server starting on port :8080...")
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server crashed: %v", err)
+		}
+	case <-ctx.Done():
+		log.Println("Shutdown signal received...")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server shutdown failed: %v", err)
+	}
+
+	log.Println("Server stopped gracefully")
 }

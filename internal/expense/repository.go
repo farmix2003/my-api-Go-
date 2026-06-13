@@ -9,6 +9,7 @@ import (
 type Repository interface {
 	Create(ctx context.Context, exp *Expense) error
 	GetAll(ctx context.Context) ([]Expense, error)
+	Update(ctx context.Context, id int, exp *Expense) error
 }
 
 // PostgresRepository now holds the real database connection pool
@@ -58,5 +59,20 @@ func (r *PostgresRepository) GetAll(ctx context.Context) ([]Expense, error) {
 		expenses = append(expenses, exp)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return expenses, nil
+}
+
+func (r *PostgresRepository) Update(ctx context.Context, id int, exp *Expense) error {
+	query := `
+		UPDATE expenses
+		SET title = $1, amount = $2
+		WHERE id = $3
+	`
+
+	_, err := r.db.Exec(ctx, query, exp.Title, exp.Amount, id)
+	return err
 }
